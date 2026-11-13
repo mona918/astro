@@ -226,15 +226,15 @@ export default function JoinChannelModal({ onJoinSuccess, onOpenAdmin }) {
           </button>
         </form>
 
-        {/* Footer Admin Console Switch */}
+        {/* Footer Admin Console Switch - goes through password gate */}
         <div className="mt-6 pt-4 border-t border-gray-800/80 text-center">
           <button
             type="button"
             onClick={onOpenAdmin}
-            className="text-xs font-mono text-gray-400 hover:text-emerald-400 flex items-center justify-center space-x-1.5 mx-auto transition-colors"
+            className="text-xs font-mono text-gray-500 hover:text-amber-400 flex items-center justify-center space-x-1.5 mx-auto transition-colors opacity-60 hover:opacity-100"
           >
-            <Shield className="w-3.5 h-3.5 text-amber-500" />
-            <span>SWITCH TO COMMAND HQ (ADMIN DASHBOARD)</span>
+            <Shield className="w-3 h-3 text-amber-700" />
+            <span>Command HQ Access (Restricted)</span>
           </button>
         </div>
       </div>

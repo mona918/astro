@@ -24,3 +24,6 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 *.local
+
+# SSL certificates (generated locally, never commit)
+server/certs/

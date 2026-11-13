@@ -85,17 +85,16 @@ class RadioAudioEngine {
   updateConditions(newConditions) {
     this.conditions = { ...this.conditions, ...newConditions };
 
-    // Update delay and filter properties on all active peer audio graphs
-    const delaySec = Math.max(0, Math.min(3, (this.conditions.transmissionDelay || 0) / 1000));
-    const distortionAmt = (this.conditions.voiceDistortion || 0) / 100;
+    if (!this.ctx) return;
 
-    for (const [peerId, nodes] of this.peerAudioNodes.entries()) {
-      if (nodes.delayNode) {
-        nodes.delayNode.delayTime.setTargetAtTime(delaySec, this.ctx.currentTime, 0.1);
-      }
-      if (nodes.shaper) {
-        nodes.shaper.curve = this.createDistortionCurve(distortionAmt * 40);
-      }
+    const delaySec = Math.max(0, Math.min(3, (this.conditions.transmissionDelay || 0) / 1000));
+    const distAmt = Math.min((this.conditions.voiceDistortion || 0) / 100, 0.6);
+
+    for (const [, nodes] of this.peerAudioNodes.entries()) {
+      const d = nodes.dspNodes;
+      if (!d) continue;
+      if (d.delayNode) d.delayNode.delayTime.setTargetAtTime(delaySec, this.ctx.currentTime, 0.1);
+      if (d.shaper) d.shaper.curve = this.createDistortionCurve(distAmt * 25);
     }
   }
 
@@ -113,96 +112,142 @@ class RadioAudioEngine {
     return curve;
   }
 
-  // Connect remote peer WebRTC stream into Tactical Audio Pipeline
+  // Connect remote peer WebRTC stream into audio pipeline.
+  // PRIMARY: HTML <audio> element — 100% mobile-compatible, routes to speaker.
+  // SECONDARY: Web Audio API chain for radio effects (filtering, distortion, delay).
   attachPeerStream(peerId, mediaStream) {
-    this.initContext();
     this.detachPeerStream(peerId);
 
+    // ---- 1. HTML <audio> element — the ONLY reliable way on mobile ----
+    // This handles speaker routing, autoplay policy, and iOS quirks automatically.
+    const audioEl = document.createElement('audio');
+    audioEl.id = `peer-audio-${peerId}`;
+    audioEl.srcObject = mediaStream;
+    audioEl.autoplay = true;
+    audioEl.playsInline = true;   // Required on iOS to prevent fullscreen
+    audioEl.controls = false;
+    audioEl.muted = false;
+    audioEl.volume = this.isMuted ? 0 : 1.0;
+    // Hide it visually but keep it in DOM so browser keeps playing
+    audioEl.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(audioEl);
+
+    // Force play — mobile browsers may need this nudge
+    audioEl.play().catch((e) => {
+      console.warn('[Audio] autoplay blocked for peer', peerId, '— will play on next interaction:', e.message);
+      // Queue play on next user interaction
+      const resume = () => {
+        audioEl.play().catch(() => {});
+        document.removeEventListener('touchstart', resume);
+        document.removeEventListener('click', resume);
+      };
+      document.addEventListener('touchstart', resume, { once: true });
+      document.addEventListener('click', resume, { once: true });
+    });
+
+    // ---- 2. Web Audio API effects chain (optional — desktop enhancement) ----
+    // We only connect the DSP chain if AudioContext is available and running.
+    // The <audio> element above already handles playback, so this layer just
+    // adds the radio-coloring effects on platforms that support it.
+    let dspNodes = null;
     try {
-      const source = this.ctx.createMediaStreamSource(mediaStream);
+      this.initContext();
+      if (this.ctx && this.ctx.state !== 'closed') {
+        this.ctx.resume();
 
-      // 1. Transmission Delay Node
-      const delaySec = Math.max(0, Math.min(3, (this.conditions.transmissionDelay || 0) / 1000));
-      const delayNode = this.ctx.createDelay(3.5);
-      delayNode.delayTime.value = delaySec;
+        // Create a destination stream so we can control the audio element's
+        // output THROUGH the DSP chain (instead of double-playing).
+        // We mute the raw audio element and re-route through Web Audio.
+        const source = this.ctx.createMediaStreamSource(mediaStream);
 
-      // 2. Highpass Filter (Cut sub-350Hz: removes room rumble, mimics small speaker)
-      const hpFilter = this.ctx.createBiquadFilter();
-      hpFilter.type = 'highpass';
-      hpFilter.frequency.value = 350;
-      hpFilter.Q.value = 1.2;
+        const delaySec = Math.max(0, Math.min(3, (this.conditions.transmissionDelay || 0) / 1000));
+        const delayNode = this.ctx.createDelay(3.5);
+        delayNode.delayTime.value = delaySec;
 
-      // 3. Lowpass Filter (Cut above 2800Hz: creates iconic limited VHF band)
-      const lpFilter = this.ctx.createBiquadFilter();
-      lpFilter.type = 'lowpass';
-      lpFilter.frequency.value = 2900;
-      lpFilter.Q.value = 1.0;
+        // Radio telephone bandpass (300Hz–3kHz is the VHF voice band)
+        const hpFilter = this.ctx.createBiquadFilter();
+        hpFilter.type = 'highpass';
+        hpFilter.frequency.value = 300;   // relaxed from 350 — less harsh on mobile
+        hpFilter.Q.value = 0.7;
 
-      // 4. Presence Peaking Filter (Peak at 1.8kHz for harsh tactical speech punch)
-      const peakFilter = this.ctx.createBiquadFilter();
-      peakFilter.type = 'peaking';
-      peakFilter.frequency.value = 1800;
-      peakFilter.Q.value = 2.0;
-      peakFilter.gain.value = 5.0;
+        const lpFilter = this.ctx.createBiquadFilter();
+        lpFilter.type = 'lowpass';
+        lpFilter.frequency.value = 3400;  // slightly wider — more intelligible
+        lpFilter.Q.value = 0.7;
 
-      // 5. Radio Saturation & Distortion WaveShaper
-      const shaper = this.ctx.createWaveShaper();
-      const distortionAmt = (this.conditions.voiceDistortion || 0) / 100;
-      shaper.curve = this.createDistortionCurve(distortionAmt * 40);
-      shaper.oversample = '2x';
+        // Subtle presence boost at 1.5kHz for speech clarity
+        const peakFilter = this.ctx.createBiquadFilter();
+        peakFilter.type = 'peaking';
+        peakFilter.frequency.value = 1500;
+        peakFilter.Q.value = 1.5;
+        peakFilter.gain.value = 3.0;      // gentler than before
 
-      // 6. Aggressive Dynamics Compressor (Radio AGC automatic gain control)
-      const compressor = this.ctx.createDynamicsCompressor();
-      compressor.threshold.value = -24;
-      compressor.knee.value = 6;
-      compressor.ratio.value = 12;
-      compressor.attack.value = 0.003;
-      compressor.release.value = 0.15;
+        // Light distortion (not too aggressive — keep voice intelligible)
+        const distAmt = Math.min((this.conditions.voiceDistortion || 0) / 100, 0.6);
+        const shaper = this.ctx.createWaveShaper();
+        shaper.curve = this.createDistortionCurve(distAmt * 25);
+        shaper.oversample = '2x';
 
-      // 7. Interruption Gate (cuts out audio during simulated signal drops)
-      const gate = this.ctx.createGain();
-      gate.gain.value = 1.0;
+        // Radio AGC compressor
+        const compressor = this.ctx.createDynamicsCompressor();
+        compressor.threshold.value = -20;
+        compressor.knee.value = 8;
+        compressor.ratio.value = 8;
+        compressor.attack.value = 0.005;
+        compressor.release.value = 0.2;
 
-      // 8. Master output gain
-      const masterGain = this.ctx.createGain();
-      masterGain.gain.value = this.isMuted ? 0 : 1.2;
+        // Interruption gate
+        const gate = this.ctx.createGain();
+        gate.gain.value = 1.0;
 
-      // Connect pipeline
-      source.connect(delayNode);
-      delayNode.connect(hpFilter);
-      hpFilter.connect(lpFilter);
-      lpFilter.connect(peakFilter);
-      peakFilter.connect(shaper);
-      shaper.connect(compressor);
-      compressor.connect(gate);
-      gate.connect(masterGain);
-      masterGain.connect(this.ctx.destination);
+        // Master gain — mute the raw audio element and use this instead
+        const masterGain = this.ctx.createGain();
+        masterGain.gain.value = this.isMuted ? 0 : 1.0;
 
-      this.peerAudioNodes.set(peerId, {
-        source,
-        delayNode,
-        hpFilter,
-        lpFilter,
-        peakFilter,
-        shaper,
-        compressor,
-        gate,
-        masterGain
-      });
+        // Wire up DSP chain
+        source.connect(delayNode);
+        delayNode.connect(hpFilter);
+        hpFilter.connect(lpFilter);
+        lpFilter.connect(peakFilter);
+        peakFilter.connect(shaper);
+        shaper.connect(compressor);
+        compressor.connect(gate);
+        gate.connect(masterGain);
+        masterGain.connect(this.ctx.destination);
+
+        // Mute the raw <audio> element since DSP chain handles output
+        audioEl.muted = true;
+
+        dspNodes = { source, delayNode, hpFilter, lpFilter, peakFilter, shaper, compressor, gate, masterGain };
+      }
     } catch (err) {
-      console.error('Failed to attach peer audio stream:', err);
+      // DSP chain failed — that's OK, raw <audio> element still plays fine
+      console.warn('[Audio] Web Audio DSP unavailable for peer', peerId, '— using direct audio element:', err.message);
+      audioEl.muted = false; // ensure raw element is unmuted as fallback
     }
+
+    this.peerAudioNodes.set(peerId, { audioEl, dspNodes });
   }
 
   detachPeerStream(peerId) {
     const nodes = this.peerAudioNodes.get(peerId);
     if (nodes) {
-      try {
-        nodes.source.disconnect();
-        nodes.delayNode.disconnect();
-        nodes.gate.disconnect();
-        nodes.masterGain.disconnect();
-      } catch (e) {}
+      // Remove the HTML audio element
+      if (nodes.audioEl) {
+        try {
+          nodes.audioEl.pause();
+          nodes.audioEl.srcObject = null;
+          nodes.audioEl.remove();
+        } catch (e) {}
+      }
+      // Disconnect DSP chain
+      if (nodes.dspNodes) {
+        try {
+          nodes.dspNodes.source.disconnect();
+          nodes.dspNodes.gate.disconnect();
+          nodes.dspNodes.masterGain.disconnect();
+        } catch (e) {}
+      }
       this.peerAudioNodes.delete(peerId);
     }
   }
@@ -229,10 +274,13 @@ class RadioAudioEngine {
 
     // Mute all active peer gates
     for (const nodes of this.peerAudioNodes.values()) {
-      if (nodes.gate) {
-        nodes.gate.gain.cancelScheduledValues(now);
-        nodes.gate.gain.setTargetAtTime(0, now, 0.01);
+      const gate = nodes.dspNodes?.gate;
+      if (gate) {
+        gate.gain.cancelScheduledValues(now);
+        gate.gain.setTargetAtTime(0, now, 0.01);
       }
+      // Also mute the raw audio element in case DSP chain isn't active
+      if (nodes.audioEl) nodes.audioEl.volume = 0;
     }
 
     // Heavy static burst during interruption
@@ -256,15 +304,17 @@ class RadioAudioEngine {
     this.activeInterruption = false;
     const now = this.ctx.currentTime;
 
-    // Restore peer gates
+    // Restore peer gates and audio elements
     for (const nodes of this.peerAudioNodes.values()) {
-      if (nodes.gate) {
-        nodes.gate.gain.cancelScheduledValues(now);
-        nodes.gate.gain.setTargetAtTime(1.0, now, 0.05);
+      const gate = nodes.dspNodes?.gate;
+      if (gate) {
+        gate.gain.cancelScheduledValues(now);
+        gate.gain.setTargetAtTime(1.0, now, 0.05);
       }
+      if (nodes.audioEl) nodes.audioEl.volume = this.isMuted ? 0 : 1.0;
     }
 
-    // Reset static to normal
+    // Reset static to normal level
     if (this.staticGain) {
       const normalLevel = Math.max(0.01, (this.conditions.staticLevel || 0) / 100) * 0.25;
       this.staticGain.gain.cancelScheduledValues(now);
@@ -452,9 +502,11 @@ class RadioAudioEngine {
   toggleMute() {
     this.isMuted = !this.isMuted;
     for (const nodes of this.peerAudioNodes.values()) {
-      if (nodes.masterGain) {
-        nodes.masterGain.gain.value = this.isMuted ? 0 : 1.2;
-      }
+      // Control raw audio element volume
+      if (nodes.audioEl) nodes.audioEl.volume = this.isMuted ? 0 : 1.0;
+      // Control DSP chain master gain (if active)
+      const mg = nodes.dspNodes?.masterGain;
+      if (mg) mg.gain.value = this.isMuted ? 0 : 1.0;
     }
     return this.isMuted;
   }

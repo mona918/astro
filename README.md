@@ -156,45 +156,120 @@ Visit `http://localhost:5173` (requests to `/socket.io` and `/api` are automatic
 
 ---
 
-## 6. LAN / Wi-Fi Multi-Device Setup
+## 6. LAN / Wi-Fi Multi-Device & Mobile Setup
 
-The platform is engineered for events where multiple laptops, phones, or tablets are connected to the **same Wi-Fi network**.
+The platform is engineered for multi-device events where laptops, phones, or tablets are connected to the **same Wi-Fi network**.
 
-### Step 1: Identify Server IP
-When the server starts, it prints your local network IP (e.g., `http://192.168.1.15:4000`).
+### Dual-Server Architecture (HTTP + HTTPS):
+When you run `npm start`, the server boots both:
+- **HTTP on Port 4000**: `http://<SERVER-IP>:4000` (for desktop/laptop browsers)
+- **HTTPS on Port 4443**: `https://<SERVER-IP>:4443` (⚡ **REQUIRED FOR MOBILE PHONES**)
 
-### Step 2: Connect Devices
-- **Command HQ (Admin)**: Open `http://localhost:4000` or `http://<SERVER-IP>:4000` on the host machine. Click **"SWITCH TO COMMAND HQ (ADMIN DASHBOARD)"**.
-- **Squad Participants**: On phones, tablets, or laptops connected to the same Wi-Fi, open `http://<SERVER-IP>:4000`.
-
-### Important Browser Note for Mobile LAN Microphones:
-Modern browsers (Chrome, Edge, Safari) protect microphone access via `getUserMedia` on secure contexts (`localhost` or `HTTPS`).
-When accessing over local HTTP via LAN IP (e.g. `http://192.168.1.15:4000`) on other devices:
-- **Chrome / Edge Flag (Recommended for testing on Android/PC)**:
-  1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the client device.
-  2. Add your server's IP (e.g. `http://192.168.1.15:4000`) to the whitelist and enable it.
-  3. Relaunch the browser.
-- **Localhost Testing**: Multiple browser tabs on `http://localhost:4000` (or `incognito` windows) enjoy full microphone access without any flags!
+```
+=====================================================
+  TACTICAL RADIO SIMULATION PLATFORM (TAC-COM)       
+=====================================================
+> HTTP  (localhost):   http://localhost:4000
+> HTTP  (LAN):         http://10.93.138.26:4000  [Wi-Fi]
+> HTTPS (LAN + MIC):   https://10.93.138.26:4443  ⬅ USE ON MOBILE
+> HTTPS (localhost):   https://localhost:4443
+>
+> Admin password:      TACCOM-HQ-2026  (or ?adminpw=YOURPW)
+=====================================================
+```
 
 ---
 
-## 7. How to Operate & Test
+### Why HTTPS is Required on Mobile:
+Modern mobile browsers (Chrome on Android, Safari on iOS) **strictly prohibit microphone access (`getUserMedia`)** over unencrypted LAN HTTP connections. By serving HTTPS on port `4443`, the browser unlocks native microphone and speaker hardware.
 
-### How Admin Starts a Match:
-1. Open the platform and navigate to **COMMAND HQ**.
-2. Review the squad channels (`Alpha Squad`, `Bravo Unit`, `Charlie Recon`) or click **"CREATE TEAM CHANNEL"** to add custom squads.
-3. Select your desired radio condition preset (`EASY`, `MEDIUM`, `HARD`, `EXTREME`).
-4. Click **[ START ROUND ]**. All operator handsets will switch from `STANDBY` to `🟢 CHANNEL READY`.
+#### Accepting the Self-Signed Certificate on Mobile (1-time step):
+When opening `https://<SERVER-IP>:4443` on Chrome/Safari for the first time:
+1. You will see a standard "Your connection is not private" warning (caused by the local self-signed SSL certificate).
+2. Tap **"Advanced"** (or **"Show Details"** on Safari / iOS).
+3. Tap **"Proceed to <IP> (unsafe)"** or **"Visit this website"**.
+4. The walkie-talkie interface will load immediately with full microphone and speaker access!
 
-### How Squad Members Communicate:
-1. Enter your operator callsign (e.g. `Viper-01`, `Ghost-Lead`).
-2. Select your assigned team channel (e.g. `ALPHA-01`).
-3. Click **"TEST MIC"** to arm your microphone, then click **"ENTER RADIO CHANNEL"**.
-4. To speak:
-   - Click and hold the large red **PUSH TO TALK** button, or press and hold the **SPACEBAR**.
-   - Your button turns red: `🔴 TRANSMITTING`. Speak into your microphone.
-   - When finished, release the button/Spacebar. You will hear the **Roger beep**, and the channel is freed for other squad members.
-5. If another squad member is speaking, your button turns amber: `🟡 CHANNEL BUSY (VIPER-01 IS TALKING)`. You cannot interrupt them until they release PTT.
+---
+
+## 7. Security: Restricted Command HQ (Admin Access)
+
+The Command HQ (Admin Dashboard) is protected by a tactical authorization gate to prevent unauthorized squad participants from accessing or tampering with round controls:
+
+- **Default HQ Security Code**: `TACCOM-HQ-2026`
+- **Session Persistence**: Stored in `sessionStorage` (stays authenticated until tab is closed).
+- **Brute Force Protection**: 5 consecutive incorrect attempts temporarily lock the terminal for 60 seconds.
+- **Custom Admin Code**: You can customize the admin password by starting the server with an environment variable or setting a URL query parameter:
+  ```
+  http://localhost:4000/?adminpw=MY_CUSTOM_CODE
+  ```
+
+---
+
+## 8. Exact Step-by-Step Procedure: Testing with 2 Phones + 1 Laptop
+
+Follow this exact procedure to verify the entire system in real life:
+
+### Step 1: Connect All Devices to the Same Wi-Fi
+Ensure the host laptop, Phone A, and Phone B are all connected to the **same Wi-Fi router / mobile hotspot**.
+
+### Step 2: Start TAC-COM on the Laptop
+In the project directory on your laptop:
+```bash
+npm start
+```
+Note the printed LAN IP (for example, `10.93.138.26`).
+
+### Step 3: Open Command HQ on Laptop
+1. Open `http://localhost:4000` in your laptop browser.
+2. Click **"HQ ADMIN"** in the top right header.
+3. Enter the HQ password: `TACCOM-HQ-2026` and tap **AUTHORIZE ACCESS**.
+4. Click **[ START ROUND ]**. The round status changes to `ACTIVE`.
+
+### Step 4: Open Handset on Phone A
+1. On **Phone A**, open Chrome/Safari and visit:
+   ```
+   https://<YOUR-LAN-IP>:4443
+   ```
+   *(Example: `https://10.93.138.26:4443`)*
+2. Tap **"Advanced"** → **"Proceed"** to accept the local SSL cert.
+3. Enter Callsign: `VIPER-01`.
+4. Select Channel: `ALPHA-01`.
+5. Tap **"TEST MIC"** and grant microphone permissions when prompted.
+6. Tap **"ENTER RADIO CHANNEL"**.
+
+### Step 5: Open Handset on Phone B
+1. On **Phone B**, open Chrome/Safari and visit:
+   ```
+   https://<YOUR-LAN-IP>:4443
+   ```
+2. Accept the certificate warning.
+3. Enter Callsign: `VIPER-02`.
+4. Select Channel: `ALPHA-01` (same channel).
+5. Tap **"TEST MIC"** and grant microphone permissions.
+6. Tap **"ENTER RADIO CHANNEL"**.
+
+### Step 6: Test Voice Communication & Half-Duplex Locking
+1. **Phone A speaks**:
+   - Press and hold the big **PUSH TO TALK** button on Phone A.
+   - Button lights up **🔴 TRANSMITTING**.
+   - Speak clearly: *"Radio check, Viper-02, do you copy?"*
+   - On Phone B, the button automatically locks to **🟡 CHANNEL BUSY (VIPER-01)**.
+   - **Phone B will hear Phone A's voice loudly through the phone speaker!**
+2. **Phone A releases PTT**:
+   - Release the button on Phone A.
+   - Both phones hear the military **Roger Beep + Squelch Tail**.
+   - Both phones return to **🟢 CHANNEL READY**.
+3. **Phone B responds**:
+   - Press and hold PTT on Phone B.
+   - Speak: *"Loud and clear, Viper-01, transmission received."*
+   - Phone A hears Phone B through the speaker.
+4. **Test Race Condition / Collision Prevention**:
+   - While Phone A is holding PTT and transmitting, have Phone B try to press PTT.
+   - Phone B is immediately rejected with a **buzzer tone** and `CHANNEL BUSY` lock. Only one person can ever speak at once!
+5. **Test Radio Interference from Admin Dashboard**:
+   - On the laptop admin dashboard, adjust **Voice Distortion** or **Static Noise** sliders, or select the **HARD** preset.
+   - Notice the realistic analog radio degradation applied to incoming transmissions in real-time.
 
 ---
 

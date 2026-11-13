@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Radio, Shield, Volume2, VolumeX, Wifi, WifiOff, Users } from 'lucide-react';
+import { Radio, Shield, Volume2, VolumeX } from 'lucide-react';
 import { socketService } from './services/socketService';
 import { audioEngine } from './audio/RadioAudioEngine';
 import JoinChannelModal from './components/JoinChannelModal';
 import RadioWalkieTalkie from './components/RadioWalkieTalkie';
 import AdminDashboard from './components/AdminDashboard';
+import AdminAuthModal, { isAdminAuthenticated, clearAdminAuth } from './components/AdminAuthModal';
 
 export default function App() {
   const [view, setView] = useState('JOIN'); // 'JOIN' | 'RADIO' | 'ADMIN'
+  const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [joinedTeam, setJoinedTeam] = useState(null);
   const [currentMember, setCurrentMember] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -15,17 +17,11 @@ export default function App() {
 
   useEffect(() => {
     const socket = socketService.connect();
-
     const handleConnect = () => setIsConnected(true);
     const handleDisconnect = () => setIsConnected(false);
-
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
-
-    if (socket.connected) {
-      setIsConnected(true);
-    }
-
+    if (socket.connected) setIsConnected(true);
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
@@ -46,6 +42,25 @@ export default function App() {
     setView('JOIN');
   };
 
+  // Attempt to open admin — requires auth
+  const requestAdminAccess = () => {
+    if (isAdminAuthenticated()) {
+      setView('ADMIN');
+    } else {
+      setShowAdminAuth(true);
+    }
+  };
+
+  const handleAdminAuthenticated = () => {
+    setShowAdminAuth(false);
+    setView('ADMIN');
+  };
+
+  const handleAdminLogout = () => {
+    clearAdminAuth();
+    setView(joinedTeam ? 'RADIO' : 'JOIN');
+  };
+
   const toggleMasterMute = () => {
     const muted = audioEngine.toggleMute();
     setIsMuted(muted);
@@ -53,6 +68,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-radio-dark text-gray-200 flex flex-col justify-between selection:bg-emerald-500 selection:text-black">
+
+      {/* Admin Password Modal - shown as overlay */}
+      {showAdminAuth && (
+        <AdminAuthModal
+          onAuthenticated={handleAdminAuthenticated}
+          onCancel={() => setShowAdminAuth(false)}
+        />
+      )}
+
       {/* Tactical Top Bar */}
       <header className="border-b border-gray-800 bg-radio-panel/80 backdrop-blur sticky top-0 z-40 px-3 sm:px-6 py-2.5">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -78,18 +102,17 @@ export default function App() {
 
           {/* Navigation & Controls */}
           <div className="flex items-center space-x-2 sm:space-x-3 font-mono text-xs">
-            {/* View Switching */}
             {view === 'ADMIN' ? (
               <button
-                onClick={() => setView(joinedTeam ? 'RADIO' : 'JOIN')}
+                onClick={handleAdminLogout}
                 className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-gray-300 flex items-center space-x-1.5 transition-colors"
               >
                 <Radio className="w-3.5 h-3.5 text-emerald-400" />
-                <span className="hidden sm:inline">SWITCH TO OPERATOR</span>
+                <span className="hidden sm:inline">EXIT HQ</span>
               </button>
             ) : (
               <button
-                onClick={() => setView('ADMIN')}
+                onClick={requestAdminAccess}
                 className="px-3 py-1.5 bg-amber-950/70 hover:bg-amber-900 border border-amber-700/60 rounded-lg text-amber-300 flex items-center space-x-1.5 transition-colors"
               >
                 <Shield className="w-3.5 h-3.5 text-amber-400" />
@@ -131,7 +154,7 @@ export default function App() {
         {view === 'JOIN' && (
           <JoinChannelModal
             onJoinSuccess={handleJoinSuccess}
-            onOpenAdmin={() => setView('ADMIN')}
+            onOpenAdmin={requestAdminAccess}
           />
         )}
 
@@ -140,7 +163,7 @@ export default function App() {
             teamData={joinedTeam}
             currentMember={currentMember}
             onLeaveChannel={handleLeaveChannel}
-            onOpenAdmin={() => setView('ADMIN')}
+            onOpenAdmin={requestAdminAccess}
           />
         )}
 
